@@ -80,7 +80,7 @@ namespace TrafficControl.Tasas.Api.Services
             if (sw.ElapsedMilliseconds >= MsOperacionLenta)
                 clsLog.GenerandoLog($"TasaService.{funcion}",
                     $"Operación lenta: {sw.ElapsedMilliseconds} ms. Código: {respuesta.Codigo}. Request: {Serializar(request)}",
-                    false);
+                    NivelLog.Warn);
 
             respuesta.FechaRespuesta = DateTime.Now;
             await _log.RegistrarAsync(funcion, request, respuesta, sw.ElapsedMilliseconds, !respuesta.Exito, excepcion);

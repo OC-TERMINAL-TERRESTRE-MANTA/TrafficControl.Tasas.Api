@@ -158,8 +158,8 @@ namespace TrafficControl.Tasas.Api.Middleware
             if (log is not null)
             {
                 clsLog.GenerandoLog("Seguridad",
-                    $"{codigo} ({status}). IP: {context.Connection.RemoteIpAddress}. {context.Request.Method} {context.Request.Path}",
-                    true);
+                $"{codigo} ({status}). IP: {context.Connection.RemoteIpAddress}. {context.Request.Method} {context.Request.Path}",
+                NivelLog.Warn);
 
                 await log.RegistrarAsync($"{Constantes.FuncionSeguridad} {context.Request.Method} {context.Request.Path}",
                                          null, respuesta, 0, true);

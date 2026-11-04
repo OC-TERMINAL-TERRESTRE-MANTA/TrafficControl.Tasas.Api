@@ -41,7 +41,7 @@ namespace TrafficControl.Tasas.Api.Middleware
                 _logger.LogWarning("Solicitud rechazada ({Status}) Ruta: {Ruta}", ex.StatusCode, context.Request.Path);
                 clsLog.GenerandoLog("ExceptionMiddleware",
                 $"Solicitud rechazada ({ex.StatusCode}): {ex.Message}. {context.Request.Method} {context.Request.Path} IP: {context.Connection.RemoteIpAddress}",
-                false);
+                NivelLog.Warn);
 
                 var respuesta = new ApiResponse<object>
                 {

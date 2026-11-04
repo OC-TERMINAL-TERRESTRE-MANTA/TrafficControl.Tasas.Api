@@ -25,6 +25,14 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 // Si corre como servicio, se integra con el Service Control Manager y el Visor de eventos.
 builder.Host.UseWindowsService(o => o.ServiceName = "TrafficControl.Tasas.Api");
 
+// --- Observabilidad: logs y métricas ---
+var observabilidad = builder.Configuration.GetSection("Observabilidad").Get<ObservabilidadOptions>()
+                     ?? new ObservabilidadOptions();
+clsLog.LogPath = observabilidad.RutaLog;
+clsLog.DiasRetencion = observabilidad.DiasRetencion;
+builder.Services.AddSingleton(observabilidad);
+builder.Services.AddHostedService<MetricasWorker>();
+
 // Puerto solo en modo servicio. En IIS lo define el binding del sitio.
 if (esServicio)
 {
@@ -241,6 +249,7 @@ if (app.Configuration.GetValue<bool>("HabilitarSwagger"))
 // app.UseHttpsRedirection();  // actívalo solo si configuras HTTPS con certificado
 
 app.UseRouting();                           // 2. necesario para que el middleware lea [SinApiKey]
+app.UseMiddleware<MetricasMiddleware>();   // ← nuevo
 app.UseRateLimiter();                       // 3. corta el exceso antes de tocar la BD
 app.UseMiddleware<ApiKeyMiddleware>();      // 4. IP permitida + bloqueo + API Key
 app.MapControllers();
