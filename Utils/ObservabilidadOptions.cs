@@ -11,5 +11,7 @@
 
         /// <summary>Cada cuántos segundos se escribe una línea de métricas (mínimo 10).</summary>
         public int IntervaloMetricasSeg { get; set; } = 60;
+        /// <summary>true = mide peticiones y escribe METRICAS_dd_MM_yyyy.txt.</summary>
+        public bool HabilitarMetricas { get; set; } = true;
     }
 }
