@@ -1,0 +1,34 @@
+﻿## =====================================================
+##  TrafficControl.Tasas.Api
+## =====================================================
+
+## Visual Studio / .NET
+.vs/
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.pubxml.user
+TestResults/
+*.nupkg
+packages/
+.idea/
+
+## Logs
+[Ll]ogs/
+*.log
+
+## Publicación (binarios + appsettings con datos del servidor)
+Publicacion/
+Publicacion.zip
+
+## Instaladores del servidor (pesados; se descargan de la página oficial de .NET)
+Utils/Necesario/aspnetcore-runtime-*.exe
+Utils/Necesario/dotnet-hosting-*.exe
+Utils/Necesario/dotnet-hosting-*.zip

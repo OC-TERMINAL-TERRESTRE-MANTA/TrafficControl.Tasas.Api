@@ -1,0 +1,186 @@
+﻿@TrafficControl.Tasas.Api_HostAddress = http://localhost:5266
+@apiKey = Olympo2026
+@codigoTasa = 20261031000000000003
+#####################################################################
+# HEALTH
+#####################################################################
+
+### 1. Señal de vida (público, sin key) → 200
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/health
+Accept: application/json
+
+### 2. Test de base de datos con key → 200 BD_OK
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/health/db
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+### 3. Test de base de datos sin key → 401 API_KEY_REQUERIDA
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/health/db
+Accept: application/json
+
+#####################################################################
+# INSERTAR TASA
+#####################################################################
+
+### 4. Insertar tasa correcta → 201 TASA_REGISTRADA
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+{
+  "codigoTasa": "{{codigoTasa}}",
+  "valorTasa": 0.50,
+  "fechaDesde": "2026-10-31T00:00:00",
+  "fechaViaje": "2026-10-31T14:30:00",
+  "fechaHasta": "2026-10-31T23:59:59",
+  "idViaje": "VJ-0001",
+  "idCooperativa": "15",
+  "idSilo": "SILO-01",
+  "usuario": "olympo"
+}
+
+### 5. Insertar la misma tasa otra vez → 409 TASA_DUPLICADA
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+{
+  "codigoTasa": "{{codigoTasa}}",
+  "valorTasa": 0.50,
+  "fechaDesde": "2026-10-31T00:00:00",
+  "fechaViaje": "2026-10-31T14:30:00",
+  "fechaHasta": "2026-10-31T23:59:59",
+  "idViaje": "VJ-0001",
+  "idCooperativa": "15",
+  "idSilo": "SILO-01",
+  "usuario": "olympo"
+}
+
+### 6. Campos obligatorios vacíos → 400 VALIDACION_ERROR (lista todos los errores)
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+{
+  "codigoTasa": "",
+  "valorTasa": null
+}
+
+### 7. Formatos inválidos → 400 VALIDACION_ERROR
+#    código con letras, 3 decimales, fecha sin "T", cooperativa no numérica, usuario > 20
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+{
+  "codigoTasa": "ABC123",
+  "valorTasa": 0.505,
+  "fechaDesde": "2026-10-31 00:00",
+  "fechaViaje": "2026-10-31T14:30:00",
+  "fechaHasta": "2026-10-31T23:59:59",
+  "idViaje": "VJ-0001",
+  "idCooperativa": "COOP-15",
+  "idSilo": "SILO-01",
+  "usuario": "usuario_con_nombre_muy_largo"
+}
+
+### 8. Fechas inconsistentes → 400 (FechaDesde > FechaHasta y FechaViaje fuera de rango)
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+{
+  "codigoTasa": "20261031000000000099",
+  "valorTasa": 0.50,
+  "fechaDesde": "2026-11-01T00:00:00",
+  "fechaViaje": "2026-11-05T14:30:00",
+  "fechaHasta": "2026-10-31T23:59:59",
+  "idViaje": "VJ-0001",
+  "idCooperativa": "15",
+  "idSilo": "SILO-01",
+  "usuario": "olympo"
+}
+
+### 9. Valor negativo → 400
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+{
+  "codigoTasa": "20261031000000000098",
+  "valorTasa": -1,
+  "fechaDesde": "2026-10-31T00:00:00",
+  "fechaViaje": "2026-10-31T14:30:00",
+  "fechaHasta": "2026-10-31T23:59:59",
+  "idViaje": "VJ-0001",
+  "idCooperativa": "15",
+  "idSilo": "SILO-01",
+  "usuario": "olympo"
+}
+
+### 10. JSON con tipo incorrecto (valorTasa texto) → 400 "El JSON enviado no tiene un formato válido"
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+{
+  "codigoTasa": "20261031000000000097",
+  "valorTasa": "cincuenta centavos"
+}
+
+### 11. Sin API Key → 401 API_KEY_REQUERIDA
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+
+{
+  "codigoTasa": "20261031000000000096",
+  "valorTasa": 0.50
+}
+
+### 12. API Key inválida → 401 API_KEY_INVALIDA
+#    Repetido 10 veces → 429 IP_BLOQUEADA por 15 min (también bloquea tus pruebas desde esta IP)
+POST {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas
+Content-Type: application/json
+Accept: application/json
+X-API-KEY: key-falsa-123
+
+{
+  "codigoTasa": "20261031000000000096",
+  "valorTasa": 0.50
+}
+
+#####################################################################
+# CONSULTAR ESTADO
+#####################################################################
+
+### 13. Consultar tasa registrada (prueba 4) → 200 estado "0" NO UTILIZADA
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas/{{codigoTasa}}/estado
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+### 14. Consultar tasa que no existe → 404 TASA_NO_EXISTE
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas/99999999999999999999/estado
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+### 15. Código inválido (letras) → 400 VALIDACION_ERROR
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas/ABC123/estado
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+### 16. Código de más de 20 dígitos → 400 VALIDACION_ERROR
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas/123456789012345678901/estado
+Accept: application/json
+X-API-KEY: {{apiKey}}
+
+### 17. Consultar sin API Key → 401
+GET {{TrafficControl.Tasas.Api_HostAddress}}/api/v1/tasas/{{codigoTasa}}/estado
+Accept: application/json
