@@ -10,8 +10,12 @@ API REST de **Traffic Control** para recibir, validar, registrar y consultar las
 | **Responsable técnico** | Tnlg. César Cevallos – Líder de proyecto |
 | **Gerente de proyecto** | Ing. David Perugachi |
 | **Empresa** | ONLY CONTROL S.A. |
+| **Proyecto** | TT_MANTA_Desarrollo_Olympo_Oct_2026 |
+| **Repositorio** | https://github.com/OC-TERMINAL-TERRESTRE-MANTA/TrafficControl.Tasas.Api |
 | **Versión de la API** | v1 |
-| **Última actualización** | 31/10/2026 |
+| **Versión actual** | `v1.0.0-rc.3` (en pruebas QaaS) |
+| **Ejecutor QaaS** | Angel Silva |
+| **Última actualización** | 04/11/2026 |
 
 ---
 
@@ -25,7 +29,7 @@ API REST de **Traffic Control** para recibir, validar, registrar y consultar las
 6. [Base de datos](#6-base-de-datos)
 7. [Configuración (appsettings.json)](#7-configuración-appsettingsjson)
 8. [Seguridad](#8-seguridad)
-9. [Auditoría (FC_LOGSERVICE)](#9-auditoría-fc_logservice)
+9. [Auditoría y observabilidad](#9-auditoría-y-observabilidad)
 10. [Clases y configuraciones especiales](#10-clases-y-configuraciones-especiales)
 11. [Desarrollo local](#11-desarrollo-local)
 12. [Pruebas](#12-pruebas)
@@ -38,6 +42,8 @@ API REST de **Traffic Control** para recibir, validar, registrar y consultar las
 19. [Solución de problemas](#19-solución-de-problemas)
 20. [Checklist de producción](#20-checklist-de-producción)
 21. [Pendientes y mejoras sugeridas](#21-pendientes-y-mejoras-sugeridas)
+22. [Repositorio y versiones](#22-repositorio-y-versiones)
+23. [Documentación del proyecto](#23-documentación-del-proyecto)
 
 ---
 
@@ -53,6 +59,8 @@ El servicio expone cuatro endpoints:
 | **Prueba de BD** | Verifica la conexión a SQL Server. Requiere API Key. |
 
 Todas las transacciones de negocio y los rechazos de seguridad quedan registrados en `FC_LOGSERVICE` (request, response, IP, tiempo, error).
+
+Además, la API escribe un **log de texto** con niveles `INFO`, `WARN`, `ERROR` y `FATAL`, y un archivo de **métricas** (peticiones, tiempos de respuesta, códigos HTTP, CPU y memoria) en `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\`, con retención configurable (ver §9).
 
 **Ciclo de vida de una tasa:**
 
@@ -80,6 +88,7 @@ ERP ──POST──► PC_TASA (TS_ESTADO = '0', TS_FECHAUSO = NULL)   → "NO 
 | Serialización | System.Text.Json |
 | Límite de peticiones | `Microsoft.AspNetCore.RateLimiting` (nativo de .NET 8) |
 | Caché (bloqueo por intentos) | `IMemoryCache` |
+| Observabilidad | Log de texto propio (`clsLog`) y métricas propias (`clsMetricas`), sin librerías externas |
 
 ### Paquetes NuGet
 
@@ -88,10 +97,27 @@ ERP ──POST──► PC_TASA (TS_ESTADO = '0', TS_FECHAUSO = NULL)   → "NO 
 | `Microsoft.EntityFrameworkCore.SqlServer` | 8.0.33 | Proveedor SQL Server |
 | `Microsoft.EntityFrameworkCore.Tools` | 8.0.33 | `Scaffold-DbContext` en la consola de paquetes |
 | `Microsoft.EntityFrameworkCore.Design` | 8.0.33 | Diseño / scaffold |
-| `Swashbuckle.AspNetCore` | 6.x | Swagger |
-| `Microsoft.Extensions.Hosting.WindowsServices` | 8.0.x | Ejecución como servicio de Windows |
+| `Swashbuckle.AspNetCore` | 6.6.2 | Swagger |
+| `Microsoft.AspNetCore.OpenApi` | 8.0.30 | Metadatos OpenAPI |
+| `Microsoft.Extensions.Hosting.WindowsServices` | 10.0.14 (recomendado: 8.0.x) | Ejecución como servicio de Windows. Conviene alinearlo a 8.0.x para no mezclar librerías de .NET 10 en un proyecto .NET 8 |
 
 `dotnet-tools.json` registra las herramientas locales de .NET del proyecto (por ejemplo `dotnet-ef`). Para restaurarlas: `dotnet tool restore`.
+
+### Versión del ensamblado
+
+Definida en `TrafficControl.Tasas.Api.csproj`:
+
+```xml
+<AssemblyVersion>2026.11.04</AssemblyVersion>
+<FileVersion>2026.11.04</FileVersion>
+<InformationalVersion>1.0.0-rc.3</InformationalVersion>
+<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+<PlatformTarget>x64</PlatformTarget>
+```
+
+- `AssemblyVersion` / `FileVersion`: fecha de compilación.
+- `InformationalVersion`: **debe coincidir con la etiqueta Git** que se publica (ver §22). Es la que muestra `GET /api/v1/health` en `datos.version`; así QaaS confirma qué versión está probando.
+- `IncludeSourceRevisionInInformationalVersion=false`: evita que el SDK agregue `+<hash del commit>` a la versión.
 
 ---
 
@@ -117,6 +143,7 @@ TrafficControl.Tasas.Api/
 ├── Middleware/
 │   ├── ApiKeyMiddleware.cs        IP permitida, bloqueo por intentos, validación de API Key
 │   ├── ExceptionMiddleware.cs     Errores no controlados y 413 → respuesta estándar
+│   ├── MetricasMiddleware.cs      Mide tiempo y código HTTP de cada petición
 │   └── SinApiKeyAttribute.cs      Marca un endpoint como público
 ├── Models/                        Entidades generadas por scaffold (nombres de BD intactos)
 │   ├── FC_LOGSERVICE.cs
@@ -126,21 +153,33 @@ TrafficControl.Tasas.Api/
 │   ├── Interfaces/
 │   │   ├── ILogService.cs
 │   │   └── ITasaService.cs
-│   ├── LogService.cs              Inserta en FC_LOGSERVICE
+│   ├── LogService.cs              Inserta en FC_LOGSERVICE (respaldo en log de texto si falla)
+│   ├── MetricasWorker.cs          Servicio en segundo plano: escribe las métricas cada intervalo
 │   └── TasaService.cs             Lógica de negocio: validación, duplicidad, inserción, consulta
 ├── Utils/
+│   ├── clsLog.cs                  Log de texto: niveles INFO/WARN/ERROR/FATAL, compresión y retención
+│   ├── clsMetricas.cs             Acumula y escribe las métricas
 │   ├── Constantes.cs              Estados, códigos de respuesta, nombres de función para el log
 │   ├── DateTimeIsoConverter.cs    Fechas JSON como yyyy-MM-ddTHH:mm:ss
-│   └── SeguridadOptions.cs        Sección "Seguridad" de appsettings
+│   ├── ErroresBd.cs               Detecta si una excepción es por falta de conexión a la BD
+│   ├── ObservabilidadOptions.cs   Sección "Observabilidad" de appsettings
+│   ├── SeguridadOptions.cs        Sección "Seguridad" de appsettings
+│   └── Necesario/                 Herramientas y documentos de apoyo
+│       ├── CriptografiaModerna.exe                     Cifrado de la cadena de conexión
+│       ├── Documentacion_Tecnica_API_Tasas_TrafficControl_v1.1.docx / .pdf   Documento de consumo
+│       └── dotnet-hosting-*.exe, aspnetcore-runtime-*.exe                    Instaladores (NO versionados)
 ├── Publicacion/                   Salida de la publicación (NO versionar)
 ├── Publicacion.zip                Paquete para copiar al servidor (NO versionar)
+├── .gitignore
 ├── appsettings.json
+├── appsettings.Development.json   Valores de desarrollo (versionado: nunca datos del servidor)
 ├── dotnet-tools.json
 ├── Program.cs                     Configuración de servicios y pipeline
+├── README.md                      Este documento
 └── TrafficControl.Tasas.Api.http  Casos de prueba para Visual Studio
 ```
 
-> Agregar `Publicacion/` y `Publicacion.zip` al `.gitignore`. Contienen binarios y un `appsettings.json` con la cadena y la API Key del servidor.
+> `Publicacion/`, `Publicacion.zip` y los instaladores de `Utils/Necesario` están excluidos en `.gitignore` (ver §22). Contienen binarios pesados y un `appsettings.json` con la cadena y la API Key del servidor.
 
 ### Responsabilidad de cada capa
 
@@ -167,22 +206,23 @@ Petición HTTP
    ├─ 1. Cabeceras de seguridad (OnStarting: nosniff, no-store)
    ├─ 2. ExceptionMiddleware ............ envuelve todo; 413 y 500 → JSON estándar
    ├─ 3. Swagger / SwaggerUI ............ solo si HabilitarSwagger = true (en la raíz "/")
-   ├─ 4. UseRouting ..................... necesario para leer [SinApiKey] del endpoint
-   ├─ 5. UseRateLimiter ................. 300 req/s por IP → 429 LIMITE_PETICIONES (sin tocar BD)
-   ├─ 6. ApiKeyMiddleware
+   ├─ 4. UseRouting ..................... necesario para leer [SinApiKey] y la ruta del endpoint
+   ├─ 5. MetricasMiddleware ............. mide tiempo y código HTTP (solo si HabilitarMetricas = true)
+   ├─ 6. UseRateLimiter ................. 300 req/s por IP → 429 LIMITE_PETICIONES (sin tocar BD)
+   ├─ 7. ApiKeyMiddleware
    │      ├─ guarda ClienteInfo en HttpContext.Items
    │      ├─ endpoint público ([SinApiKey] o /swagger) → continúa
    │      ├─ IP fuera de IpsPermitidas (si la lista no está vacía) → 403
    │      ├─ IP bloqueada por intentos → 429 IP_BLOQUEADA (sin log en BD)
    │      ├─ sin cabecera / key inválida → 401 (+ cuenta intento, + log en BD)
    │      └─ key válida → reinicia contador y continúa
-   ├─ 7. MapControllers
+   ├─ 8. MapControllers
    │      ├─ Model binding: JSON mal formado → 400 (InvalidModelStateResponseFactory)
    │      └─ Controller → TasaService
    │             ├─ Validaciones de negocio → 400
    │             ├─ Duplicidad (PC_TASA + PC_TASAHIST) → 409
    │             ├─ INSERT PC_TASA → 201 (TS_ID en idTransaccion)
-   │             └─ LogService → INSERT FC_LOGSERVICE
+   │             └─ LogService → INSERT FC_LOGSERVICE (si falla: respaldo en el log de texto)
    ▼
 Respuesta JSON estándar
 ```
@@ -217,10 +257,23 @@ if (app.Configuration.GetValue<bool>("HabilitarSwagger"))
 }
 
 app.UseRouting();
+
+if (observabilidad.HabilitarMetricas)
+    app.UseMiddleware<MetricasMiddleware>();   // después de UseRouting: conoce la ruta del endpoint
+
 app.UseRateLimiter();
 app.UseMiddleware<ApiKeyMiddleware>();
 app.MapControllers();
-app.Run();
+
+try
+{
+    app.Run();
+}
+catch (Exception ex)
+{
+    clsLog.GenerandoLog("Program", "La API se detuvo por un error", ex, NivelLog.Fatal);
+    throw;
+}
 ```
 
 ### 4.3 Registro de servicios (resumen)
@@ -233,6 +286,8 @@ app.Run();
 | `SeguridadOptions` | Singleton | Leído de `Seguridad` y validado al arrancar |
 | `IMemoryCache` | Singleton | Contador de intentos fallidos |
 | `IHttpContextAccessor` | Singleton | LogService obtiene `ClienteInfo` |
+| `ObservabilidadOptions` | Singleton | Sección `Observabilidad`; configura `clsLog` (ruta y retención) al arrancar, **antes** del descifrado |
+| `MetricasWorker` | Hosted service | Solo si `HabilitarMetricas = true` |
 | Rate limiter | Global | Partición por IP |
 | `AddControllers().AddJsonOptions(...)` | — | Registra `DateTimeIsoConverter` |
 
@@ -447,6 +502,12 @@ SELECT 'HIST',             * FROM PC_TASAHIST WHERE TS_IDBC = '20261031000000000
   "ServicioWindows": {
     "Url": "http://0.0.0.0:5080"
   },
+  "Observabilidad": {
+    "RutaLog": "C:\\BIOMETRIC_LOG",
+    "DiasRetencion": 30,
+    "IntervaloMetricasSeg": 60,
+    "HabilitarMetricas": true
+  },
   "HabilitarSwagger": false,
   "Logging": {
     "LogLevel": {
@@ -474,6 +535,10 @@ SELECT 'HIST',             * FROM PC_TASAHIST WHERE TS_IDBC = '20261031000000000
 | `Seguridad:MaxTamanoBodyKb` | `16` | Tamaño máximo del body. Se aplica a Kestrel y a IIS. |
 | `ServicioWindows:Url` | `http://0.0.0.0:5080` | Dirección y puerto de escucha **solo en modo servicio**. En IIS se ignora (el puerto lo define el sitio). |
 | `HabilitarSwagger` | `false` | `true` publica Swagger en la raíz (`/`). |
+| `Observabilidad:RutaLog` | `C:\BIOMETRIC_LOG` | Carpeta raíz del log de texto y de las métricas. Dentro se crea `TrafficControl.Tasas.Api\`. |
+| `Observabilidad:DiasRetencion` | `30` | Días que se conservan los `.zip` de días anteriores. `0` = no se elimina nada. |
+| `Observabilidad:IntervaloMetricasSeg` | `60` | Cada cuántos segundos se escribe una línea de métricas (mínimo 10). |
+| `Observabilidad:HabilitarMetricas` | `true` | `false` desactiva la medición y el archivo de métricas. **En producción debe ser `true`** (lineamiento de Gerencia de Desarrollo). |
 | `Logging:LogLevel:Microsoft.EntityFrameworkCore` | `Warning` | **No bajar a Information en producción**: EF registraría cada SQL (unas 400 líneas por segundo a 100 req/s). |
 
 ### 7.3 Configuración por ambiente
@@ -565,7 +630,19 @@ Si se excede, se lanza `BadHttpRequestException(413)` y `ExceptionMiddleware` la
 
 ---
 
-## 9. Auditoría (FC_LOGSERVICE)
+## 9. Auditoría y observabilidad
+
+La API deja tres registros complementarios:
+
+| Registro | Dónde | Para qué |
+|---|---|---|
+| **Auditoría** | Tabla `FC_LOGSERVICE` | Cada transacción de negocio y cada rechazo de seguridad: request, respuesta, IP, tiempo, resultado |
+| **Log de texto** | `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\LOG_EVENT_dd_MM_yyyy.txt` | Eventos críticos con nivel: arranque, desconexión de BD, excepciones, seguridad. Funciona aunque la BD esté caída |
+| **Métricas** | `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\METRICAS_dd_MM_yyyy.txt` | Rendimiento por minuto: peticiones, tiempos de respuesta, códigos HTTP, CPU, memoria |
+
+Logs y métricas son las **dos capas mínimas de observabilidad** que exige la Gerencia de Desarrollo para todo software en producción (Alcance Funcional: RNF-08 y RNF-09).
+
+### 9.1 Auditoría en base de datos (FC_LOGSERVICE)
 
 `LogService.RegistrarAsync(funcion, request, response, milisegundos, error, excepcion?)`:
 
@@ -573,7 +650,7 @@ Si se excede, se lanza `BadHttpRequestException(413)` y `ExceptionMiddleware` la
 - `LOGSERVICE_MENSAJE` → JSON de la respuesta; si hubo excepción, `{ "respuesta": ..., "excepcion": "<ex.ToString()>" }`.
 - Usa las **mismas `JsonSerializerOptions` de MVC** (`IOptions<Microsoft.AspNetCore.Mvc.JsonOptions>`), así las fechas del log salen igual que en la respuesta HTTP.
 - Llama a `ChangeTracker.Clear()` antes de insertar. Si el `INSERT` de la tasa falló (por ejemplo, duplicada), la entidad fallida sigue en el contexto, y sin limpiar EF intentaría guardarla otra vez junto con el log.
-- Si el log falla, **no se cae la respuesta al ERP**: el error va a `ILogger`.
+- Si el log falla, **no se cae la respuesta al ERP**: el error va a `ILogger` y el registro completo (PARAM y MENSAJE) se guarda en el log de texto como respaldo (§9.2).
 - `LOGSERVICE_FUNCION` se trunca a 100 caracteres.
 
 Ejemplo de `LOGSERVICE_PARAM`:
@@ -585,7 +662,131 @@ Ejemplo de `LOGSERVICE_PARAM`:
 }
 ```
 
-**Qué no se registra:** `/health` y `/health/db` (para no llenar la tabla con el monitoreo), los rechazos del rate limiter y los rechazos posteriores al bloqueo de una IP.
+**Qué no se registra en la tabla:** `/health` y `/health/db` (para no llenar la tabla con el monitoreo), los rechazos del rate limiter y los rechazos posteriores al bloqueo de una IP.
+
+### 9.2 Log de texto (`clsLog`)
+
+**Archivo:** `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\LOG_EVENT_dd_MM_yyyy.txt` (uno por día; la ruta raíz sale de `Observabilidad:RutaLog`).
+
+**Formato de línea:**
+
+```
+NIVEL -> HH:mm:ss.fff Origen: mensaje [| excepción completa]
+```
+
+**Niveles y eventos registrados:**
+
+| Nivel | Eventos |
+|---|---|
+| `INFO` | API iniciada (modo, servidor, IP local, ruta) y detenida; conexión a BD verificada al iniciar; señal de vida consultada; prueba de BD correcta; métricas iniciadas |
+| `WARN` | Operación lenta (≥ 3 s); rechazos de seguridad (401, 403, bloqueo de IP); solicitud demasiado grande (413); métricas deshabilitadas por configuración |
+| `ERROR` | **Sin conexión a la base de datos**; excepciones en `TasaService` y `ExceptionMiddleware` (con referencia y request); falla al guardar en `FC_LOGSERVICE` (con el registro completo como respaldo) |
+| `FATAL` | No se pudo descifrar la cadena de conexión; `ApiKeys` vacía; la API se detuvo por un error |
+
+**Ejemplo:**
+
+```
+INFO -> 08:00:12.104 Program: API iniciada. Modo: IIS / Consola. Servidor: TTM-ONLYCONTROL. IP local: 192.168.5.2. Ruta: C:\inetpub\wwwroot\TrafficControlTasasService\
+INFO -> 08:00:12.388 Program: Conexión a la base de datos verificada al iniciar
+INFO -> 08:00:12.401 MetricasWorker: Métricas iniciadas. Intervalo: 60 s
+INFO -> 08:01:00.015 HealthController.Ping: Señal de vida consultada. IP: 192.168.5.20. Tiempo activo: 0.00:00:47
+WARN -> 09:12:44.230 Seguridad: API_KEY_INVALIDA (401). IP: 192.168.5.77. POST /api/v1/tasas
+ERROR -> 10:42:31.877 HealthController.TestDb: SIN CONEXIÓN A BASE DE DATOS (15012 ms). IP: 192.168.5.20 | Microsoft.Data.SqlClient.SqlException ...
+ERROR -> 10:42:46.902 TasaService.InsertarTasa: SIN CONEXIÓN A BASE DE DATOS. Ref: 75e1fcc0... Request: {...} | ...
+ERROR -> 10:43:01.930 LogService.InsertarTasa: SIN CONEXIÓN A BASE DE DATOS al guardar en FC_LOGSERVICE: ... | TIEMPO=15030 ms | ERROR=True | PARAM={...} | MENSAJE={...}
+FATAL -> 07:59:58.010 Program: No se pudo descifrar ConnectionStrings:CadenaTasas | System.Security.Cryptography.CryptographicException ...
+```
+
+**Uso desde el código:**
+
+```csharp
+clsLog.GenerandoLog("Origen", "mensaje", NivelLog.Warn);                 // nivel explícito
+clsLog.GenerandoLog("Origen", "mensaje", ex);                            // excepción → ERROR
+clsLog.GenerandoLog("Origen", "mensaje", ex, NivelLog.Fatal);            // excepción con nivel
+clsLog.GenerandoLog("Origen", "mensaje", true);                          // compatibilidad: true = ERROR, false = INFO
+```
+
+**Características:**
+
+- **Seguro con peticiones simultáneas:** escribe dentro de un `lock`; probado con 2 000 escrituras concurrentes sin pérdida de líneas.
+- **Nunca interrumpe la API:** cualquier error del propio log se ignora.
+- **Detección de desconexión:** `ErroresBd.EsErrorConexion(ex)` recorre la cadena de excepciones (EF envuelve el `SqlException`) y reconoce timeout (-2), servidor no encontrado (2, 53), conexión cortada (64, 121, 233, 1225, 10053, 10054, 10060, 11001), base no disponible (4060), login fallido (18456) y errores de severidad ≥ 20. `ErroresBd.Tipo(ex)` devuelve `SIN CONEXIÓN A BASE DE DATOS` o `ERROR NO CONTROLADO`.
+- **No se registra cada transacción exitosa** (ya están en `FC_LOGSERVICE`): a 100 req/s el archivo crecería más de 1 GB al día.
+
+### 9.3 Métricas (`clsMetricas`)
+
+**Componentes:**
+
+| Componente | Función |
+|---|---|
+| `MetricasMiddleware` | Mide cada petición: endpoint (plantilla de ruta), código HTTP y milisegundos. Si la petición termina en excepción, la cuenta como `500`. |
+| `clsMetricas` | Acumula en memoria por endpoint: peticiones, tiempo total, tiempo máximo y conteo por código HTTP. |
+| `MetricasWorker` | Servicio en segundo plano (`BackgroundService` + `PeriodicTimer`): cada `IntervaloMetricasSeg` escribe una línea y reinicia los contadores. Al detenerse la API escribe el último periodo. |
+
+**Archivo:** `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\METRICAS_dd_MM_yyyy.txt`
+
+**Ejemplo de línea:**
+
+```
+METRICA -> 10:16:00 | Periodo 60 s | Peticiones 432 (7.2/s) | CPU 3.1 % | Memoria 142 MB | GC 38 MB | Hilos 34 | GET /api/v1/tasas/{codigoTasa}/estado: 120 req, prom 12 ms, máx 95 ms [200:117 404:3] | POST /api/v1/tasas: 312 req, prom 45 ms, máx 820 ms [201:298 400:4 409:10]
+```
+
+| Campo | Significado |
+|---|---|
+| `Periodo` | Segundos medidos (el intervalo configurado) |
+| `Peticiones (x/s)` | Total del periodo y promedio por segundo |
+| `CPU %` | Uso de procesador del proceso sobre el total de núcleos del servidor |
+| `Memoria` | Memoria RAM del proceso (working set) |
+| `GC` | Memoria de objetos .NET. Si crece minuto a minuto sin bajar, indica una fuga de memoria |
+| `Hilos` | Hilos del proceso. Debe mantenerse estable |
+| `endpoint: n req, prom, máx [código:cantidad]` | Por cada ruta: peticiones, tiempo promedio y máximo, y respuestas por código HTTP |
+
+- Las rutas se agrupan por **plantilla** (`/api/v1/tasas/{codigoTasa}/estado`), no por cada código de tasa.
+- `GET /(sin ruta) ... [404:n]`: peticiones a rutas que no existen (normalmente el `favicon.ico` que pide el navegador, o escaneos). No es un error de la API.
+- Aunque no haya tráfico, cada intervalo se escribe la línea con CPU, memoria e hilos: sirve como latido del servicio.
+
+**Qué vigilar:**
+
+| Señal | Posible causa |
+|---|---|
+| `prom` / `máx` de `POST /api/v1/tasas` en cientos o miles de ms | Base de datos lenta |
+| Muchos `500` | Errores internos → revisar `LOG_EVENT_` |
+| Muchos `401` / `429` | Intentos de acceso sin key válida o un cliente en bucle |
+| `GC` o `Hilos` en aumento constante | Fuga de memoria o de hilos |
+| Huecos en las horas de las líneas | La API estuvo detenida o el grupo de aplicaciones se recicló |
+
+### 9.4 Compresión y retención
+
+- Una vez al día (con la primera escritura del día), los `.txt` de días anteriores — eventos **y** métricas — se comprimen en `LOG_dd_MM_yyyy.zip` y se borran.
+- En la misma rutina se **eliminan los `.zip` con más de `DiasRetencion` días** (por defecto 30). Con `DiasRetencion = 0` no se elimina nada.
+
+Contenido típico de la carpeta:
+
+```
+C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\
+├── LOG_EVENT_04_11_2026.txt     eventos de hoy
+├── METRICAS_04_11_2026.txt      métricas de hoy
+├── LOG_03_11_2026.zip           LOG_EVENT_ + METRICAS_ del 03/11
+├── LOG_02_11_2026.zip
+└── ...                          hasta 30 días
+```
+
+### 9.5 Activar o desactivar las métricas
+
+`Observabilidad:HabilitarMetricas` en `appsettings.json`:
+
+| Valor | Efecto |
+|---|---|
+| `true` | Se registra `MetricasMiddleware` y `MetricasWorker`; se escribe `METRICAS_`. **Obligatorio en producción.** |
+| `false` | No se mide ni se escribe el archivo de métricas. Queda una línea `WARN` en el log indicando que se deshabilitaron por configuración. |
+
+El valor se lee al arrancar: después de cambiarlo hay que **reciclar el grupo de aplicaciones** (IIS) o **reiniciar el servicio**.
+
+### 9.6 Permisos de escritura
+
+- **IIS:** la identidad del grupo de aplicaciones necesita permiso de modificación en `C:\BIOMETRIC_LOG` (ver §14.7). **Sin ese permiso, el log y las métricas fallan en silencio** (por diseño, el log nunca interrumpe la API).
+- **Servicio de Windows:** corre como LocalSystem y ya tiene permiso.
+- Las métricas dependen de que la API esté corriendo: en IIS, el grupo de aplicaciones debe estar en `AlwaysRunning` con tiempo de inactividad `0` (§14.5).
 
 ---
 
@@ -656,7 +857,50 @@ var cadena = clsCriptografiaModerna.Desencriptar(cadenaCifrada);
 builder.Services.AddDbContext<TrafficControlDbContext>(o => o.UseSqlServer(cadena));
 ```
 
+Si el descifrado falla o devuelve vacío, se registra `FATAL` en el log de texto y la API no arranca:
+
+```csharp
+try
+{
+    cadena = clsCriptografiaModerna.Desencriptar(cadenaCifrada);
+    if (string.IsNullOrWhiteSpace(cadena))
+        throw new InvalidOperationException("La cadena descifrada está vacía");
+}
+catch (Exception ex)
+{
+    clsLog.GenerandoLog("Program", "No se pudo descifrar ConnectionStrings:CadenaTasas", ex, NivelLog.Fatal);
+    throw;
+}
+```
+
 Las **API Keys no se descifran**: se usan tal como están en `appsettings`.
+
+### 10.8 Observabilidad en `Program.cs`
+
+Se configura **antes** del descifrado, para que un `FATAL` al arrancar ya quede en la ruta configurada:
+
+```csharp
+var observabilidad = builder.Configuration.GetSection("Observabilidad").Get<ObservabilidadOptions>()
+                     ?? new ObservabilidadOptions();
+clsLog.LogPath = observabilidad.RutaLog;
+clsLog.DiasRetencion = observabilidad.DiasRetencion;
+builder.Services.AddSingleton(observabilidad);
+
+if (observabilidad.HabilitarMetricas)
+    builder.Services.AddHostedService<MetricasWorker>();
+else
+    clsLog.GenerandoLog("Program", "Métricas deshabilitadas por configuración (Observabilidad:HabilitarMetricas = false)", NivelLog.Warn);
+```
+
+Eventos de ciclo de vida (después de `builder.Build()`):
+
+- `ApplicationStarted` → `INFO` "API iniciada" con modo, servidor, IP local y ruta, y una verificación de la BD en segundo plano (`OpenConnectionAsync`) que deja `INFO` si conecta o `ERROR` "SIN CONEXIÓN A BASE DE DATOS al iniciar la API".
+- `ApplicationStopping` → `INFO` "API deteniéndose (reciclaje del pool, parada del servicio o apagado)".
+
+### 10.9 `HealthController`
+
+- `Ping` (`/api/v1/health`): devuelve la `InformationalVersion` del ensamblado (`AssemblyInformationalVersionAttribute`), el servidor y el tiempo activo; registra `INFO` en el log de texto.
+- `TestDb` (`/api/v1/health/db`): usa `Database.OpenConnectionAsync` en lugar de `CanConnectAsync`, porque `CanConnectAsync` oculta el error. Así el log guarda el **motivo exacto** de la falla (login, servidor, timeout).
 
 ---
 
@@ -674,7 +918,7 @@ Las **API Keys no se descifran**: se usan tal como están en `appsettings`.
 1. Abrir la solución y restaurar los paquetes NuGet.
 2. Cifrar la cadena de conexión de desarrollo y ponerla en `ConnectionStrings:CadenaTasas`.
 3. Poner una API Key de pruebas en `Seguridad:ApiKeys`.
-4. Crear `appsettings.Development.json` (opcional):
+4. `appsettings.Development.json` (está **versionado en Git**: solo valores de desarrollo, nunca los del servidor):
    ```json
    {
      "HabilitarSwagger": true,
@@ -690,6 +934,8 @@ Las **API Keys no se descifran**: se usan tal como están en `appsettings`.
 - Toda operación de negocio nueva → por `EjecutarAsync` en el servicio, para que quede en el log.
 - No serializar entidades de EF: siempre DTO.
 - No volver a crear `JsonSerializerOptions` en cada llamada: inyectar `IOptions<Microsoft.AspNetCore.Mvc.JsonOptions>`.
+- Eventos críticos (catch, desconexión de BD, seguridad, arranque) → `clsLog.GenerandoLog(..., NivelLog.X)` con el nivel que corresponde (§9.2). No usar `Console.WriteLine`.
+- Commits con Conventional Commits y una etiqueta por versión liberada (§22).
 
 ---
 
@@ -732,10 +978,18 @@ Incluido en el proyecto. En Visual Studio aparece *Enviar solicitud* sobre cada 
 | 16 | GET estado de código inexistente | 404 `TASA_NO_EXISTE` |
 | 17 | GET estado con letras / > 20 dígitos | 400 |
 | 18 | POST body > 16 KB | 413 `SOLICITUD_MUY_GRANDE` |
+| 19 | Arrancar la API | `LOG_EVENT_` con `INFO ... API iniciada` y `Conexión a la base de datos verificada` |
+| 20 | Esperar un intervalo de métricas | Línea `METRICA` en `METRICAS_` con peticiones, tiempos, CPU y memoria |
+| 21 | Detener SQL Server o usar una cadena inválida y llamar `/health/db` | 503 `BD_ERROR` y `ERROR ... SIN CONEXIÓN A BASE DE DATOS` en el log |
+| 22 | Casos 11 y 12 | `WARN ... API_KEY_REQUERIDA / API_KEY_INVALIDA` en el log |
+| 23 | `HabilitarMetricas = false` + reciclar | No se escribe `METRICAS_`; `WARN ... Métricas deshabilitadas` en el log |
+| 24 | Dejar un `.txt` de un día anterior y un `.zip` de hace más de 30 días | El `.txt` pasa a `LOG_dd_MM_yyyy.zip`; el `.zip` antiguo se elimina |
+| 25 | `GET /api/v1/health` | `datos.version` = versión de la etiqueta publicada |
 
 **Verificación en BD después de las pruebas:**
 - `PC_TASA`: el registro del caso 4 con `TS_ESTADO = '0'`.
 - `FC_LOGSERVICE`: registros `InsertarTasa`, `ConsultarEstadoTasa` y `SEGURIDAD ...` con la IP en `LOGSERVICE_PARAM`.
+- `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\`: `LOG_EVENT_` con los niveles esperados y `METRICAS_` con una línea por intervalo.
 
 ### 12.3 Pruebas con cURL
 
@@ -794,7 +1048,8 @@ dotnet publish -c Release -r win-x64 --self-contained true -o .\Publicacion
 
 ### 13.3 Antes de copiar al servidor
 
-- Revisar el `appsettings.json` **del paquete**: cadena cifrada **para ese servidor** (ver §17), API Key de producción, `MostrarDetalleErrores: false`, `HabilitarSwagger: false`.
+- Actualizar `<InformationalVersion>` en el `.csproj` con la etiqueta que se va a publicar (§2, §22).
+- Revisar el `appsettings.json` **del paquete**: cadena cifrada **para ese servidor** (ver §17), API Key de producción, `MostrarDetalleErrores: false`, `HabilitarSwagger: false`, sección `Observabilidad` con `HabilitarMetricas: true`.
 - Comprimir en `Publicacion.zip` para copiarlo.
 - **No sobrescribir** el `appsettings.json` del servidor en una actualización si ya está configurado (ver §16).
 
@@ -880,6 +1135,10 @@ Para la opción **Examinar** del sitio, opcionalmente activar *Precarga habilita
 # Lectura para la identidad del pool
 icacls "C:\inetpub\wwwroot\TrafficControlTasasService" /grant "IIS AppPool\TrafficControl.Tasas.Api:(OI)(CI)RX"
 
+# Escritura para el log de texto y las métricas
+mkdir C:\BIOMETRIC_LOG -ErrorAction SilentlyContinue
+icacls "C:\BIOMETRIC_LOG" /grant "IIS AppPool\TrafficControl.Tasas.Api:(OI)(CI)M"
+
 # Puerto del sitio
 New-NetFirewallRule -DisplayName "TrafficControl.Tasas.Api" -Direction Inbound -Protocol TCP -LocalPort 8085 -Action Allow
 ```
@@ -917,6 +1176,8 @@ Lo genera la publicación. Valores relevantes:
 | `http://192.168.5.2:8085/api/v1/health` (otra PC de la red) | `API_OK` |
 | `/api/v1/health/db` con key | `BD_OK` |
 | `http://localhost:8085/` | Swagger si `HabilitarSwagger = true`; si no, `401 API_KEY_REQUERIDA` (**correcto**) |
+| `/api/v1/health` → `datos.version` | La versión de la etiqueta publicada (ej. `1.0.0-rc.3`) |
+| `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\` | `LOG_EVENT_...txt` con `INFO ... API iniciada` y, al cumplirse el intervalo, `METRICAS_...txt` |
 
 ### 14.10 Logs de arranque (stdout)
 
@@ -973,7 +1234,8 @@ sc.exe start "TrafficControl.Tasas.Api"
 ### 15.4 Logs
 
 - Al arrancar se registra `TrafficControl.Tasas.Api iniciado. Modo: Servicio de Windows. Ruta: ...`.
-- Los logs van al **Visor de eventos → Aplicación** (proveedor EventLog que agrega `UseWindowsService`).
+- Los logs de ASP.NET Core van al **Visor de eventos → Aplicación** (proveedor EventLog que agrega `UseWindowsService`).
+- El log de texto y las métricas van a `C:\BIOMETRIC_LOG\TrafficControl.Tasas.Api\`, igual que en IIS. LocalSystem ya tiene permiso de escritura.
 
 ### 15.5 Detener, actualizar y desinstalar
 
@@ -997,9 +1259,9 @@ sc.exe delete "TrafficControl.Tasas.Api"
 
 1. Respaldar la carpeta del sitio, **sobre todo `appsettings.json`**.
 2. Crear un archivo `app_offline.htm` en la raíz del sitio. El módulo de IIS detiene la app y libera las DLL; las peticiones reciben ese HTML con un 503.
-3. Copiar los archivos nuevos **excepto `appsettings.json`**. Si la versión trae parámetros nuevos, agregarlos a mano al del servidor.
+3. Copiar los archivos nuevos **excepto `appsettings.json`**. Si la versión trae parámetros nuevos, agregarlos a mano al del servidor (ejemplo: la sección `Observabilidad` desde la `v1.0.0-rc.2`, y `HabilitarMetricas` desde la `v1.0.0-rc.3`).
 4. Borrar `app_offline.htm`.
-5. Probar `/api/v1/health` y `/api/v1/health/db`.
+5. Probar `/api/v1/health` (confirmar `datos.version`) y `/api/v1/health/db`, y revisar que el log de texto registre `INFO ... API iniciada`.
 
 Sin `app_offline.htm`, Windows no deja sobrescribir `TrafficControl.Tasas.Api.dll` porque está en uso. La alternativa es detener el grupo de aplicaciones.
 
@@ -1064,6 +1326,11 @@ Por un canal seguro y separado de la documentación. Nunca por el mismo correo q
 | Las fechas dan `VALIDACION_ERROR` | Formato distinto de `yyyy-MM-ddTHH:mm:ss` (sin `T`, con milisegundos o con zona) | Ajustar el formato en el cliente |
 | Todas las IPs bloqueadas o limitadas a la vez | Hay un proxy delante y todas llegan con su IP | Configurar `ForwardedHeaders` (§8.5) |
 | El primer request tarda varios segundos | Pool inactivo o recién reciclado | `AlwaysRunning` + tiempo de inactividad `0` (§14.5) |
+| No se crean archivos en `C:\BIOMETRIC_LOG` | Falta permiso de escritura para la identidad del pool, o `RutaLog` apunta a otra carpeta | `icacls` de §14.7; revisar `Observabilidad:RutaLog` |
+| Hay `LOG_EVENT_` pero no `METRICAS_` | `HabilitarMetricas = false` (hay un `WARN` en el log) o aún no se cumple el primer intervalo | Revisar la configuración y esperar `IntervaloMetricasSeg` |
+| Huecos de horas en `METRICAS_` | El grupo de aplicaciones se detuvo por inactividad o se recicló | `AlwaysRunning` + inactividad `0`; buscar `API deteniéndose` en el log |
+| `/api/v1/health` muestra otra versión | Se publicó un paquete distinto o no se actualizó `InformationalVersion` | Republicar desde la etiqueta correcta (§22) |
+| Muchas líneas `ERROR ... SIN CONEXIÓN A BASE DE DATOS` | SQL Server caído, red o credenciales | Probar `/api/v1/health/db` y la conexión con SSMS desde el servidor |
 
 **Comparar tipos entre bases (desarrollo y producción):**
 
@@ -1095,12 +1362,19 @@ ORDER BY TABLE_NAME, ORDINAL_POSITION;
 - [ ] `IpsPermitidas` con la IP del ERP si la API queda expuesta
 - [ ] `Logging` de EF Core en `Warning`
 
+**Observabilidad**
+- [ ] Sección `Observabilidad` en el `appsettings.json` del servidor, con `HabilitarMetricas: true`
+- [ ] Permiso de escritura en `C:\BIOMETRIC_LOG` para la identidad del grupo de aplicaciones
+- [ ] `LOG_EVENT_` registra `INFO ... API iniciada` y `Conexión a la base de datos verificada`
+- [ ] `METRICAS_` escribe una línea por intervalo
+- [ ] `DiasRetencion` acordado con el cliente (por defecto 30)
+
 **Base de datos**
 - [ ] Modelo alineado con los tipos de la BD de producción (`TS_ID`)
 - [ ] Tasas y logs de prueba eliminados
 
 **Pruebas finales**
-- [ ] `/api/v1/health` → `API_OK` desde la red del ERP
+- [ ] `/api/v1/health` → `API_OK` desde la red del ERP, con la versión esperada en `datos.version`
 - [ ] `/api/v1/health/db` → `BD_OK`
 - [ ] Alta de una tasa real de prueba → 201 → consulta → `"0"`
 - [ ] Registro visible en `FC_LOGSERVICE` con la IP del ERP
@@ -1117,14 +1391,115 @@ ORDER BY TABLE_NAME, ORDINAL_POSITION;
 
 | Mejora | Descripción | Prioridad |
 |---|---|---|
+| **Worker Service Parking Control – Olympo** | Fase 3.3 del cronograma: servicio que consume la API de Olympo. Pendiente de confirmar su alcance (no está en el Alcance Funcional v1.0) y de la documentación de la API de Olympo. | Alta |
+| **Alertas sobre métricas** | Notificar (correo o monitoreo) cuando suban los `500`, los tiempos de respuesta o la memoria. | Media |
 | **HTTPS** | Certificado en el binding de IIS, o en `Kestrel:Endpoints` en modo servicio. Obligatorio si se publica fuera de la red interna. | Alta (si es pública) |
 | **Proyecto de pruebas** | `TrafficControl.Tasas.Api.Tests` con xUnit: pruebas unitarias de `TasaService.Validar`, `DescribirEstado` y `DateTimeIsoConverter`; pruebas de integración con `WebApplicationFactory<Program>` para los middlewares (401, 403, 429, 413) y los controllers. Requiere `public partial class Program { }` al final de `Program.cs`. | Media |
-| **Log asíncrono** | Encolar el log en un `Channel<T>` y que un `BackgroundService` lo inserte en lotes. Baja la latencia, pero un reinicio brusco pierde los logs que estaban en cola. Evaluar con la prueba de carga. | Según carga |
+| **Auditoría asíncrona** | Encolar la inserción en `FC_LOGSERVICE` en un `Channel<T>` y que un `BackgroundService` la haga en lotes. Baja la latencia, pero un reinicio brusco pierde los registros en cola. Evaluar con la prueba de carga y las métricas. | Según carga |
 | **JWT** | Si se acuerda con el cliente: `POST /api/v1/auth/token` con usuario y clave del sistema y token con expiración. | Baja |
 | **`ForwardedHeaders`** | Solo si se instala un proxy o balanceador delante (§8.5). | Condicional |
 | **Bloqueo distribuido** | El contador de intentos está en memoria; con varias instancias detrás de un balanceador, pasar a Redis o a SQL. | Condicional |
 | **Datos sin columna** | `fechaViaje`, `idViaje`, `idSilo` y `usuario` solo quedan en el log. Si el negocio los necesita para reportes, evaluar con Traffic Control una tabla complementaria. | A definir |
 | **Health checks nativos** | Migrar `/health` a `AddHealthChecks()` si se integra con una herramienta de monitoreo estándar. | Baja |
+
+---
+
+## 22. Repositorio y versiones
+
+### 22.1 Repositorio
+
+| | |
+|---|---|
+| **URL** | https://github.com/OC-TERMINAL-TERRESTRE-MANTA/TrafficControl.Tasas.Api |
+| **Organización** | `OC-TERMINAL-TERRESTRE-MANTA` (privado) |
+| **Rama principal** | `main` |
+| **Cuenta de trabajo** | `CCEVALLOSOC` |
+
+Si en el equipo también hay una cuenta personal de GitHub, se fija la cuenta de trabajo en el remoto de este repositorio:
+
+```powershell
+git remote set-url origin https://CCEVALLOSOC@github.com/OC-TERMINAL-TERRESTRE-MANTA/TrafficControl.Tasas.Api.git
+```
+
+Para quitar una credencial personal guardada: `git credential-manager github logout <usuario>`, o **Panel de control → Administrador de credenciales → Credenciales de Windows → `git:https://github.com` → Quitar**.
+
+### 22.2 `.gitignore`
+
+| Excluido | Motivo |
+|---|---|
+| `.vs/`, `bin/`, `obj/`, `*.user`, `TestResults/` … | Archivos de Visual Studio y de compilación |
+| `[Ll]ogs/`, `*.log` | Logs locales |
+| `Publicacion/`, `Publicacion.zip` | Binarios y `appsettings.json` con datos del servidor |
+| `Utils/Necesario/aspnetcore-runtime-*.exe`, `dotnet-hosting-*.exe`, `dotnet-hosting-*.zip` | Instaladores pesados (GitHub rechaza archivos > 100 MB); se descargan de la página oficial de .NET |
+
+`appsettings.json` se versiona con valores de ejemplo (`<CADENA_CIFRADA>`, `<API_KEY>`) y `appsettings.Development.json` con valores **de desarrollo**. Nunca se suben la cadena ni la API Key del servidor de producción: lo que entra en un commit queda en el historial.
+
+### 22.3 Convención de commits
+
+| Tipo | Cuándo |
+|---|---|
+| `feat` | Funcionalidad nueva |
+| `fix` | Corrección de un error (por ejemplo, observaciones de QaaS) |
+| `docs` | Solo documentación |
+| `refactor` | Cambio interno sin cambiar el comportamiento |
+| `chore` | Configuración, `.gitignore`, versiones de paquetes |
+
+Ejemplo: `feat(observabilidad): parámetro HabilitarMetricas para activar o desactivar las métricas`
+
+### 22.4 Versiones liberadas
+
+| Etiqueta | Fecha | Estado | Contenido |
+|---|---|---|---|
+| `v1.0.0-rc.1` | 04/11/2026 | Liberada | Registro y consulta de tasas, health, seguridad (API Key, límites, bloqueo), auditoría en `FC_LOGSERVICE`, log de texto en puntos críticos |
+| `v1.0.0-rc.2` | 04/11/2026 | Liberada | Observabilidad: niveles `INFO/WARN/ERROR/FATAL`, retención configurable y métricas diarias |
+| `v1.0.0-rc.3` | 04/11/2026 | **En pruebas QaaS** | Parámetro `HabilitarMetricas` |
+| `v1.0.0` | — | Pendiente | Versión aprobada por QaaS |
+
+### 22.5 Flujo de liberación
+
+1. Hacer los cambios y probarlos localmente.
+2. Actualizar `<InformationalVersion>` en el `.csproj` con la nueva etiqueta.
+3. Commit, etiqueta anotada y push:
+   ```powershell
+   git add .
+   git commit -m "feat(...): descripción"
+   git tag -a v1.0.0-rc.N -m "TrafficControl.Tasas.Api v1.0.0-rc.N - descripción"
+   git push origin main
+   git push origin v1.0.0-rc.N
+   ```
+4. Publicar en el servidor (§13, §16) y verificar que `/api/v1/health` muestre la versión.
+5. QaaS prueba esa versión:
+   - **Aprobada:** `git tag -a v1.0.0 v1.0.0-rc.N -m "Aprobada por QaaS"` y `git push origin v1.0.0`.
+   - **Con observaciones:** se corrige (`fix`) y se libera `v1.0.0-rc.N+1`.
+
+> **Nunca mover ni reutilizar una etiqueta ya subida a GitHub.** Si alguien ya la descargó, quedaría con un código distinto al que dice la etiqueta. Cada cambio publicado lleva una etiqueta nueva.
+
+Ver etiquetas: `git tag -n` · detalle: `git show v1.0.0-rc.3` · historial: `git log --oneline --decorate -5`.
+
+---
+
+## 23. Documentación del proyecto
+
+El proyecto se ejecuta con la metodología de **célula de ejecución** (Developer + QaaS), basada de forma parcial en ISO/IEC/IEEE 12207:2026. Artefactos:
+
+| N.º | Artefacto | Responsable | Archivo | Estado |
+|---|---|---|---|---|
+| 1 | Documento de Alcance Funcional | Developer | `01_Alcance_Funcional_TT_MANTA_Olympo_v1.0.docx` | Emitido |
+| 2 | Informe de Ingeniería y Arquitectura del Sistema Legado | Developer | — | Pendiente (requiere el código de Traffic Control) |
+| 3 | Plan de Desarrollo | Developer | `03_Plan_Desarrollo_TT_MANTA_Olympo_v1.0.xlsx` | Emitido |
+| 4 | Desarrollo de los cambios | Developer | Este repositorio | `v1.0.0-rc.3` en pruebas |
+| 5 | Plan de Pruebas QaaS | QaaS – Angel Silva | — | Pendiente |
+| 6 | Resultado de Pruebas y Aceptación | QaaS – Angel Silva | — | Pendiente |
+
+Documentación técnica:
+
+| Documento | Para quién | Ubicación |
+|---|---|---|
+| Documentación Técnica – API de Tasas (Word / PDF) | Consumidores del servicio (ERP) | `Utils/Necesario/` |
+| `README.md` (este documento) | Equipo de Only Control | Raíz del repositorio |
+| Swagger / OpenAPI | Desarrolladores y QaaS | Raíz del servicio (con `HabilitarSwagger = true`) |
+
+> Lineamiento de Gerencia de Desarrollo: los documentos se trabajan en formato `.md` (ideal para los asistentes de código) y se entregan en Word.
 
 ---
 
