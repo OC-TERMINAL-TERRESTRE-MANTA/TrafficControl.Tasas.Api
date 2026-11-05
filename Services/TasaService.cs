@@ -183,7 +183,8 @@ namespace TrafficControl.Tasas.Api.Services
                     IdCooperativa = t.TS_IDCOOP,
                     Estado = t.TS_ESTADO,
                     FechaRegistro = t.TS_FECHACREA,
-                    FechaUso = t.TS_FECHAUSO
+                    FechaUso = t.TS_FECHAUSO,
+                    IpMarca = t.TS_IP_MARCA
                 })
                 .FirstOrDefaultAsync();
 
@@ -200,7 +201,8 @@ namespace TrafficControl.Tasas.Api.Services
                     IdCooperativa = t.TS_IDCOOP,
                     Estado = t.TS_ESTADO,
                     FechaRegistro = t.TS_FECHACREA,
-                    FechaUso = t.TS_FECHAUSO
+                    FechaUso = t.TS_FECHAUSO,
+                    IpMarca = t.TS_IP_MARCA
                 })
                 .FirstOrDefaultAsync();
 

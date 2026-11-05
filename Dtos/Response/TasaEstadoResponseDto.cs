@@ -6,5 +6,6 @@ namespace TrafficControl.Tasas.Api.Dtos.Response
     {
         [JsonPropertyOrder(1)]             // al final del JSON
         public DateTime? FechaUso { get; set; }
+        public string? IpMarca { get; set; }
     }
 }
